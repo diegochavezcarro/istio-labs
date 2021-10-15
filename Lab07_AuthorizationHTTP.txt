@@ -1,0 +1,117 @@
+
+1. Authorization Policy para HTTP:
+https://istio.io/latest/docs/tasks/security/authorization/authz-http/
+
+2. Tener instalado BookInfo tal como en el Lab1. Observar se vean bien los Book Reviews y los Book Details en http://$GATEWAY_URL/productpage (ver Lab1)
+
+3. Denegar todo tipo de acceso. Al no tener esta política un selector, aplica para todas las cargas. El spec vacío indica que no hay ningún tipo de tráfico permitido.
+
+kubectl apply -f - <<EOF
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: deny-all
+  namespace: default
+spec:
+  {}
+EOF
+
+Al acceder a http://$GATEWAY_URL/productpage) se verá "RBAC: access denied", ya que no hay acceso para ningún workload dentro del Mesh
+
+4. Crear una política llamada productpage-viewer que permita acceso GET hacia productpage. Al no tener un "from" todas las fuentes se permiten, habilitandose para todos los usuarios y workloads:
+
+kubectl apply -f - <<EOF
+apiVersion: "security.istio.io/v1beta1"
+kind: "AuthorizationPolicy"
+metadata:
+  name: "productpage-viewer"
+  namespace: default
+spec:
+  selector:
+    matchLabels:
+      app: productpage
+  rules:
+  - to:
+    - operation:
+        methods: ["GET"]
+EOF
+
+Ahora se podrá ver la página pero con un "Error fetching product details" y un "Error fetching product reviews", ya que el workload de productpage no tiene acceso a los details y reviews.
+
+5. Crear la política details-viewer para que productpage pueda acceder por HTTP GET a details. productpage envía requests utilizando la Service Account de Kubernetes  "cluster.local/ns/default/sa/bookinfo-productpage" (https://github.com/istio/istio/blob/master/samples/bookinfo/platform/kube/bookinfo.yaml):
+
+kubectl apply -f - <<EOF
+apiVersion: "security.istio.io/v1beta1"
+kind: "AuthorizationPolicy"
+metadata:
+  name: "details-viewer"
+  namespace: default
+spec:
+  selector:
+    matchLabels:
+      app: details
+  rules:
+  - from:
+    - source:
+        principals: ["cluster.local/ns/default/sa/bookinfo-productpage"]
+    to:
+    - operation:
+        methods: ["GET"]
+EOF
+
+6. Crear la siguiente política para permitirle a productpage acceder por GET a reviews:
+
+kubectl apply -f - <<EOF
+apiVersion: "security.istio.io/v1beta1"
+kind: "AuthorizationPolicy"
+metadata:
+  name: "reviews-viewer"
+  namespace: default
+spec:
+  selector:
+    matchLabels:
+      app: reviews
+  rules:
+  - from:
+    - source:
+        principals: ["cluster.local/ns/default/sa/bookinfo-productpage"]
+    to:
+    - operation:
+        methods: ["GET"]
+EOF
+
+En la página se verá el resto del contenido excepto un "Ratings service currently unavailable" dentro de “Book Reviews”.
+
+7. Crear la política ratings-viewer policy para permitir que el workload reviews, que envía los requests utilizando la Service Account "cluster.local/ns/default/sa/bookinfo-reviews" pueda acceder a ratings mediante el método GET de HTTP.
+Ahora se verá todo como al inicio:
+
+kubectl apply -f - <<EOF
+apiVersion: "security.istio.io/v1beta1"
+kind: "AuthorizationPolicy"
+metadata:
+  name: "ratings-viewer"
+  namespace: default
+spec:
+  selector:
+    matchLabels:
+      app: ratings
+  rules:
+  - from:
+    - source:
+        principals: ["cluster.local/ns/default/sa/bookinfo-reviews"]
+    to:
+    - operation:
+        methods: ["GET"]
+EOF
+
+
+8. Limpiar todo:
+
+kubectl delete authorizationpolicy.security.istio.io/deny-all
+kubectl delete authorizationpolicy.security.istio.io/productpage-viewer
+kubectl delete authorizationpolicy.security.istio.io/details-viewer
+kubectl delete authorizationpolicy.security.istio.io/reviews-viewer
+kubectl delete authorizationpolicy.security.istio.io/ratings-viewer
+
+
+

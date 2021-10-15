@@ -1,0 +1,99 @@
+
+1. Minikube con Profiles, para poder tener varios mini clusters de Kubernetes:
+Para tener uno dedicado a Istio (ponerle el nombre que se quiera):
+minikube start --memory 6144 -p istio
+
+Se podrán ver los perfiles (por defecto aparecerá uno default, Minikube y el nuevo) y su estado con:
+minikube profile list
+
+Para poder usar el service de kubernetes de tipo LoadBalancer:
+minikube tunnel -p istio
+El dashboard de kubernetes para este profile se vera con:
+minikube dashboard -p istio
+
+2. Instalacion:
+https://istio.io/docs/setup/getting-started/
+
+Instalar Istio:
+curl -L https://istio.io/downloadIstio | sh -
+Para poder usar istioctl en la terminal (utilizar la version adecuada):
+export PATH="$PATH:/Users/diegochavez/tools/istio-1.9.5/bin"
+Setear el perfil demo, con varias aplicaciones instaladas:
+cd istio-1.9.5/
+istioctl install --set profile=demo -y
+Anotar el namespace para que por defecto inyecte los sidecar en las app:
+kubectl label namespace default istio-injection=enabled
+
+3. Instalar la app de ejemplo, que está en https://github.com/istio/istio/blob/master/samples/bookinfo/platform/kube/bookinfo.yaml
+
+kubectl apply -f samples/bookinfo/platform/kube/bookinfo.yaml
+kubectl get services
+kubectl get pods
+kubectl get deploy
+
+4. Probar si se desplegó:
+
+kubectl exec -it $(kubectl get pod -l app=ratings -o jsonpath='{.items[0].metadata.name}') -c ratings -- curl productpage:9080/productpage | grep -o "<title>.*</title>"
+
+5. Instalar el Gateway (https://github.com/istio/istio/blob/master/samples/bookinfo/networking/bookinfo-gateway.yaml):
+kubectl apply -f samples/bookinfo/networking/bookinfo-gateway.yaml
+kubectl get gateway
+kubectl get virtualservice
+
+6. Exportar variables para obtener las URL:
+export INGRESS_PORT=$(kubectl -n istio-system get service istio-ingressgateway -o jsonpath='{.spec.ports[?(@.name=="http2")].nodePort}')
+export SECURE_INGRESS_PORT=$(kubectl -n istio-system get service istio-ingressgateway -o jsonpath='{.spec.ports[?(@.name=="https")].nodePort}')
+echo $INGRESS_PORT
+echo $SECURE_INGRESS_PORT
+
+export INGRESS_HOST=$(minikube ip -p istio)
+echo $INGRESS_HOST
+
+export GATEWAY_URL=$INGRESS_HOST:$INGRESS_PORT
+echo $GATEWAY_URL
+
+7. Ver esa url en un browser (sumarle /productpage), o con curl:
+
+curl -s "http://${GATEWAY_URL}/productpage" | grep -o "<title>.*</title>"
+
+En el caso de usar driver tipo docker no se verá.
+
+También se puede:
+
+kubectl get svc -n istio-system
+
+Buscar istio-ingressgateway, obtener su "IP externa" y usar el puerto interno 
+Por ej:
+http://10.108.89.108/productpage
+Esto gracias a estar utilizándose el "minikube tunnel",
+
+En caso de problemas con driver docker, ejecutar:
+minikube -p istio service istio-ingressgateway -n istio-system
+
+La segunda ventana (la q con el tunnel mapea a http2/80) va a andar, por ejemplo:
+http://127.0.0.1:50194/productpage
+
+
+8. Desplegar las herramientas Kiali, Prometheus, Grafana, y Jaeger (puede requerir mas de un intento). 
+kubectl apply -f samples/addons 
+kubectl rollout status deployment/kiali -n istio-system
+
+Ver la herramienta Jaeger, para Trazabilidad:
+istioctl dashboard jaeger
+
+Ver la herramienta Kali, para observabilidad:
+istioctl dashboard kiali
+
+Ingresar con admin/admin
+
+9. Instalar los Destination Rules para los próximos ejercicios:
+https://istio.io/docs/examples/bookinfo/
+El archivo es:
+https://github.com/istio/istio/blob/master/samples/bookinfo/networking/destination-rule-all.yaml
+
+kubectl apply -f samples/bookinfo/networking/destination-rule-all.yaml
+kubectl get destinationrules -o yaml
+
+11. Conservar todo (incluyendo estar dentro del directorio de instalación de Istio) para los próximos ejercicios.
+
+

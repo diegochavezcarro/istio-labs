@@ -1,0 +1,42 @@
+1. Fault Injection:
+https://istio.io/docs/tasks/traffic-management/fault-injection/
+
+2. Implementar lo del Lab Request Routing:
+
+kubectl apply -f samples/bookinfo/networking/virtual-service-all-v1.yaml
+kubectl apply -f samples/bookinfo/networking/virtual-service-reviews-test-v2.yaml
+
+Refrescar el browser y ver Kiali. Ingresar como usuario "jason"
+En ese caso se verán estrellas negras, en otros se vera sin estrellas de rating.
+
+3. HTTP Delay Fault: Inyectar un delay en Ratings para el caso de ser el usuario jason. Cuando Reviews lo llame este delay será aplicado:
+https://github.com/istio/istio/blob/master/samples/bookinfo/networking/virtual-service-ratings-test-delay.yaml
+
+kubectl apply -f samples/bookinfo/networking/virtual-service-ratings-test-delay.yaml
+
+4. Al tener el servicio Reviews hardcoded un timeout de 10 segundos cuando accede al servicio de Ratings, no debería haber ningún problema:
+https://github.com/istio/istio/blob/master/samples/bookinfo/src/reviews/reviews-application/src/main/java/application/rest/LibertyRestEndpoint.java
+
+5. Probar en el browser, logueado como jason, se verá lo siguiente:
+Error fetching product reviews!
+Levantar la parte de networking del Developer Tools del browser y volver a cargar la página, se verá que se carga en 6 segundos y tira el error.
+
+6. Esto se debe a que en ProductPage hay hardcoded un timeout de 3 segundos más un reintento (6 segundos) al llamar a Reviews:
+
+https://github.com/istio/istio/blob/master/samples/bookinfo/src/productpage/productpage.py
+
+7. De esta manera se pueden detectar bugs en la aplicación en lugares que no imaginábamos. 
+
+8. Inyectar un HTTP Abort Fault. Crear un Fault Injection Rule para el user jason en el servicio Rating:
+https://github.com/istio/istio/blob/master/samples/bookinfo/networking/virtual-service-ratings-test-abort.yaml
+
+kubectl apply -f samples/bookinfo/networking/virtual-service-ratings-test-abort.yaml
+
+9. Al refrescar el browser se verá una respuesta inmediata y un mensaje: 
+Ratings service is currently unavailable
+Ver también lo que muestra el Kiali.
+
+10. De esta manera se puede probar cómo responde el sistema a diferentes tipos de errores.
+
+11. Resetear el ejemplo para dejarlo como al principio:
+kubectl delete -f samples/bookinfo/networking/virtual-service-all-v1.yaml

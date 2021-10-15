@@ -1,0 +1,50 @@
+1. Traffic Shifting:
+https://istio.io/docs/tasks/traffic-management/traffic-shifting/
+Antes del Lab verificar que está todo en el estado inicial, refrescar el browser varias veces y ver que a veces no muestra los ratings y a veces muestra estrellas negras y otras roja. Esto es debido a que el servicio de reviews esta accediendo a tres versiones de su deploy. Ver también el Service Graph de Kiali.
+
+2. Primero redirigir todo a la version 1 (https://github.com/istio/istio/blob/master/samples/bookinfo/networking/virtual-service-all-v1.yaml) de cada app:
+
+
+kubectl apply -f samples/bookinfo/networking/virtual-service-all-v1.yaml
+
+La version 1 de reviews no accede al servicio de rating.
+
+Refrescar varias veces el browser.
+Ver lo que muestra el "Service Graph" del Kali (habilitar que muestre los porcentajes y Traffic Animation).
+
+3. Transferir un 50% del trafico a la version 1 de reviews y la otra mitad a la version 3:
+https://github.com/istio/istio/blob/master/samples/bookinfo/networking/virtual-service-reviews-50-v3.yaml
+
+kubectl apply -f samples/bookinfo/networking/virtual-service-reviews-50-v3.yaml
+
+Refrescar varias veces el browser y ver lo que muestra el Kiali.
+
+4. Redirigir un 90% del trafico a la version 1 y 10% a la version 2:
+https://github.com/istio/istio/blob/master/samples/bookinfo/networking/virtual-service-reviews-90-10.yaml
+
+kubectl apply -f samples/bookinfo/networking/virtual-service-reviews-90-10.yaml
+
+Refrescar varias veces el browser y ver lo que muestra el Kiali.
+
+
+5. Redirigir todo el trafico a la version 3 de reviews: 
+https://github.com/istio/istio/blob/master/samples/bookinfo/networking/virtual-service-reviews-v3.yaml
+
+kubectl apply -f samples/bookinfo/networking/virtual-service-reviews-v3.yaml
+
+Refrescar varias veces el browser y ver lo que muestra el Kiali.
+
+6. Limpiar dejando como estaba el original:
+kubectl delete -f samples/bookinfo/networking/virtual-service-all-v1.yaml
+
+Se mostraran las tres versiones de reviews.
+
+7. Hay una serie de requerimientos para que las apps en Kubernetes funcionen bien en Istio:
+https://istio.io/docs/ops/deployment/requirements/
+
+
+
+
+
+
+

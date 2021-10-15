@@ -1,0 +1,418 @@
+
+1. Authentication Policy:
+https://istio.io/latest/docs/tasks/security/authentication/authn-policy/
+
+-------------------
+
+Primera Parte, PeerAuthentication (Autenticación a nivel Servicio)
+
+2. No es necesario tener el ejemplo BookInfo ni tener habilitado Istio Injection a nivel namespace (se inyectarán manualmente).
+Se recomienda empezar de cero, creando otro profile, con:
+minikube start --memory 6144 -p istio3
+minikube dashboard -p istio3
+minikube tunnel -p istio3
+export PATH="$PATH:/Users/diegochavez/tools/istio-1.9.5/bin"
+istioctl install --set profile=demo -y
+Este último paso tmb podría usar el perfil default de Istio (istioctl install):
+https://istio.io/latest/docs/setup/additional-setup/config-profiles/ 
+
+3. Setear 3 namespaces, dos con ejemplos q tienen Sidecar y uno que no lo tiene:
+
+kubectl create ns foo
+kubectl apply -f <(istioctl kube-inject -f samples/httpbin/httpbin.yaml) -n foo
+kubectl apply -f <(istioctl kube-inject -f samples/sleep/sleep.yaml) -n foo
+kubectl create ns bar
+kubectl apply -f <(istioctl kube-inject -f samples/httpbin/httpbin.yaml) -n bar
+kubectl apply -f <(istioctl kube-inject -f samples/sleep/sleep.yaml) -n bar
+kubectl create ns legacy
+kubectl apply -f samples/httpbin/httpbin.yaml -n legacy
+kubectl apply -f samples/sleep/sleep.yaml -n legacy
+
+Ver los ejemplos:
+https://github.com/istio/istio/blob/master/samples/httpbin/httpbin.yaml
+https://github.com/istio/istio/blob/master/samples/sleep/sleep.yaml
+
+Se podrá ver cuales pods tienen y cuales no sidecar:
+kubectl get pods -n bar
+kubectl get pods -n foo
+kubectl get pods -n legacy
+
+4. Probar el acceso de sleep.bar a httpbin.foo
+kubectl exec $(kubectl get pod -l app=sleep -n bar -o jsonpath={.items..metadata.name}) -c sleep -n bar -- curl http://httpbin.foo:8000/ip -s -o /dev/null -w "%{http_code}\n"
+
+5. Probar todos los accesos:
+
+for from in "foo" "bar" "legacy"; do for to in "foo" "bar" "legacy"; do kubectl exec $(kubectl get pod -l app=sleep -n ${from} -o jsonpath={.items..metadata.name}) -c sleep -n ${from} -- curl "http://httpbin.${to}:8000/ip" -s -o /dev/null -w "sleep.${from} to httpbin.${to}: %{http_code}\n"; done; done
+
+6. Probar si hay alguna política de Peer Authentication:
+kubectl get peerauthentication --all-namespaces
+
+7. Ver si no hay Destination Rules que apliquen a estos ejemplos:
+
+kubectl get destinationrules.networking.istio.io --all-namespaces -o yaml | grep "host:"
+
+Si hay, que no sean para los hosts sleep y httpbin
+
+8. Probar el Mutual TLS que viene por defecto:
+
+kubectl exec $(kubectl get pod -l app=sleep -n foo -o jsonpath={.items..metadata.name}) -c sleep -n foo -- curl http://httpbin.foo:8000/headers -s | grep X-Forwarded-Client-Cert
+
+Ver https://spiffe.io/
+
+9. Ver lo mismo en aquellos casos que no hay Sidecar:
+
+kubectl exec $(kubectl get pod -l app=sleep -n foo -o jsonpath={.items..metadata.name}) -c sleep -n foo -- curl http://httpbin.legacy:8000/headers -s | grep X-Forwarded-Client-Cert
+
+10. Habilitar de forma global al Service Mesh el MTLS en modo Estricto:
+
+kubectl apply -f - <<EOF
+apiVersion: "security.istio.io/v1beta1"
+kind: "PeerAuthentication"
+metadata:
+  name: "default"
+  namespace: "istio-system"
+spec:
+  mtls:
+    mode: STRICT
+EOF
+
+11. Probar si se cumple:
+
+for from in "foo" "bar" "legacy"; do for to in "foo" "bar" "legacy"; do kubectl exec $(kubectl get pod -l app=sleep -n ${from} -o jsonpath={.items..metadata.name}) -c sleep -n ${from} -- curl "http://httpbin.${to}:8000/ip" -s -o /dev/null -w "sleep.${from} to httpbin.${to}: %{http_code}\n"; done; done
+
+Se verá que no funcionan los requests desde aquellos Pods que no tengan Sidecar.
+
+12. Para continuar con el resto del ejercicio borrar:
+
+kubectl delete peerauthentication -n istio-system default
+
+13. Habilitar MTLS modo estricto para un namespace:
+
+kubectl apply -f - <<EOF
+apiVersion: "security.istio.io/v1beta1"
+kind: "PeerAuthentication"
+metadata:
+  name: "default"
+  namespace: "foo"
+spec:
+  mtls:
+    mode: STRICT
+EOF
+
+14. Probarlo:
+
+for from in "foo" "bar" "legacy"; do for to in "foo" "bar" "legacy"; do kubectl exec $(kubectl get pod -l app=sleep -n ${from} -o jsonpath={.items..metadata.name}) -c sleep -n ${from} -- curl "http://httpbin.${to}:8000/ip" -s -o /dev/null -w "sleep.${from} to httpbin.${to}: %{http_code}\n"; done; done
+
+No va a funcionar el del sleep.legacy hacia httpbin.foo
+
+15. Para continuar con el resto, borrar:
+
+kubectl delete peerauthentication -n foo default
+
+16. Habilitar MTLS por Workload, en este caso para el servicio httpbin del ns bar:
+
+cat <<EOF | kubectl apply -n bar -f -
+apiVersion: "security.istio.io/v1beta1"
+kind: "PeerAuthentication"
+metadata:
+  name: "httpbin"
+  namespace: "bar"
+spec:
+  selector:
+    matchLabels:
+      app: httpbin
+  mtls:
+    mode: STRICT
+EOF
+
+17. En el caso del MTLS a nivel Service, también es necesario configurar un Destination Rule para que se aplique en modo outbound:
+
+cat <<EOF | kubectl apply -n bar -f -
+apiVersion: "networking.istio.io/v1alpha3"
+kind: "DestinationRule"
+metadata:
+  name: "httpbin"
+spec:
+  host: "httpbin.bar.svc.cluster.local"
+  trafficPolicy:
+    tls:
+      mode: ISTIO_MUTUAL
+EOF
+
+18. Probar nuevamente:
+for from in "foo" "bar" "legacy"; do for to in "foo" "bar" "legacy"; do kubectl exec $(kubectl get pod -l app=sleep -n ${from} -o jsonpath={.items..metadata.name}) -c sleep -n ${from} -- curl "http://httpbin.${to}:8000/ip" -s -o /dev/null -w "sleep.${from} to httpbin.${to}: %{http_code}\n"; done; done
+
+No va a funcionar el sleep.legacy hacia el httpbin.bar
+
+19. Configurar a nivel puerto, liberando del MTLS al puerto 80 (a nivel Container):
+
+cat <<EOF | kubectl apply -n bar -f -
+apiVersion: "security.istio.io/v1beta1"
+kind: "PeerAuthentication"
+metadata:
+  name: "httpbin"
+  namespace: "bar"
+spec:
+  selector:
+    matchLabels:
+      app: httpbin
+  mtls:
+    mode: STRICT
+  portLevelMtls:
+    80:
+      mode: DISABLE
+EOF
+
+20. También requiere un Destination Rule, esta vez con el puerto 8000, a nivel Service.
+
+cat <<EOF | kubectl apply -n bar -f -
+apiVersion: "networking.istio.io/v1alpha3"
+kind: "DestinationRule"
+metadata:
+  name: "httpbin"
+spec:
+  host: httpbin.bar.svc.cluster.local
+  trafficPolicy:
+    tls:
+      mode: ISTIO_MUTUAL
+    portLevelSettings:
+    - port:
+        number: 8000
+      tls:
+        mode: DISABLE
+EOF
+
+21. Probar Nuevamente:
+
+for from in "foo" "bar" "legacy"; do for to in "foo" "bar" "legacy"; do kubectl exec $(kubectl get pod -l app=sleep -n ${from} -o jsonpath={.items..metadata.name}) -c sleep -n ${from} -- curl "http://httpbin.${to}:8000/ip" -s -o /dev/null -w "sleep.${from} to httpbin.${to}: %{http_code}\n"; done; done
+
+22. Probar la precedencia de Políticas:
+
+kubectl apply -f - <<EOF
+apiVersion: "security.istio.io/v1beta1"
+kind: "PeerAuthentication"
+metadata:
+  name: "default"
+  namespace: "foo"
+spec:
+  mtls:
+    mode: STRICT
+EOF
+
+cat <<EOF | kubectl apply -n foo -f -
+apiVersion: "security.istio.io/v1beta1"
+kind: "PeerAuthentication"
+metadata:
+  name: "overwrite-example"
+  namespace: "foo"
+spec:
+  selector:
+    matchLabels:
+      app: httpbin
+  mtls:
+    mode: DISABLE
+EOF
+
+cat <<EOF | kubectl apply -n foo -f -
+apiVersion: "networking.istio.io/v1alpha3"
+kind: "DestinationRule"
+metadata:
+  name: "overwrite-example"
+spec:
+  host: httpbin.foo.svc.cluster.local
+  trafficPolicy:
+    tls:
+      mode: DISABLE
+EOF
+
+Se verá que tiene prioridad la política a nivel servicio sobre la que tenía el namespace:
+
+kubectl exec $(kubectl get pod -l app=sleep -n legacy -o jsonpath={.items..metadata.name}) -c sleep -n legacy -- curl http://httpbin.foo:8000/ip -s -o /dev/null -w "%{http_code}\n"
+
+23. Resetear lo hecho hasta ahora:
+
+kubectl delete peerauthentication default overwrite-example -n foo
+kubectl delete peerauthentication httpbin -n bar
+kubectl delete destinationrules overwrite-example -n foo
+kubectl delete destinationrules httpbin -n bar
+
+
+--------------------------
+
+
+24. Segunda Parte: RequestAuthentication: Autenticación de Usuario Final. 
+
+Usa los ejemplos del repo de un token
+https://raw.githubusercontent.com/istio/istio/release-1.10/security/tools/jwt/samples/demo.jwt
+Y de un Endpoint JWKS:
+https://raw.githubusercontent.com/istio/istio/release-1.10/security/tools/jwt/samples/jwks.json
+
+25. Crear un Ingress Gateway:
+
+kubectl apply -f - <<EOF
+apiVersion: networking.istio.io/v1alpha3
+kind: Gateway
+metadata:
+  name: httpbin-gateway
+  namespace: foo
+spec:
+  selector:
+    istio: ingressgateway # use Istio default gateway implementation
+  servers:
+  - port:
+      number: 80
+      name: http
+      protocol: HTTP
+    hosts:
+    - "*"
+EOF
+
+Y un Virtual Service, para exponer httpbin.foo: 
+
+kubectl apply -f - <<EOF
+apiVersion: networking.istio.io/v1alpha3
+kind: VirtualService
+metadata:
+  name: httpbin
+  namespace: foo
+spec:
+  hosts:
+  - "*"
+  gateways:
+  - httpbin-gateway
+  http:
+  - route:
+    - destination:
+        port:
+          number: 8000
+        host: httpbin.foo.svc.cluster.local
+EOF
+
+26. Obtener la IP del Ingress (tener levantado el minikube tunnel) y probar el acceso:
+
+export INGRESS_HOST=$(kubectl -n istio-system get service istio-ingressgateway -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+
+curl $INGRESS_HOST/headers -s -o /dev/null -w "%{http_code}\n"
+
+En caso de problemas con driver docker, ejecutar:
+minikube -p istio3 service istio-ingressgateway -n istio-system
+Y utilizar la segunda opción que se levanta en el browser: por ej, http://127.0.0.1:52762/
+
+curl 127.0.0.1:52762/headers -s -o /dev/null -w "%{http_code}\n"
+
+27. Crear un request authentication policy que requiere un end-user JWT para el ingress gateway:
+
+kubectl apply -f - <<EOF
+apiVersion: security.istio.io/v1beta1
+kind: RequestAuthentication
+metadata:
+  name: "jwt-example"
+  namespace: istio-system
+spec:
+  selector:
+    matchLabels:
+      istio: ingressgateway
+  jwtRules:
+  - issuer: "testing@secure.istio.io"
+    jwksUri: "https://raw.githubusercontent.com/istio/istio/release-1.10/security/tools/jwt/samples/jwks.json"
+EOF
+
+28. Sin un token va a andar bien (después vemos ésa política), con un token correcto sí y con uno incorrecto no:
+
+curl $INGRESS_HOST/headers -s -o /dev/null -w "%{http_code}\n"
+Ver paso 26 si no anda, por ej:
+curl 127.0.0.1:52762/headers -s -o /dev/null -w "%{http_code}\n"
+
+curl --header "Authorization: Bearer deadbeef" $INGRESS_HOST/headers -s -o /dev/null -w "%{http_code}\n"
+
+TOKEN=$(curl https://raw.githubusercontent.com/istio/istio/release-1.10/security/tools/jwt/samples/demo.jwt -s)
+curl --header "Authorization: Bearer $TOKEN" $INGRESS_HOST/headers -s -o /dev/null -w "%{http_code}\n"
+
+29. Para ver más detalles crear un generador de tokens. Requiere pip3, python3, wget y la librería de python https://pypi.org/project/jwcrypto/
+
+pip3 install jwcrypto
+pip3 install six 
+
+En MacOS:
+brew install wget
+
+Bajarse un generador:
+
+wget https://raw.githubusercontent.com/istio/istio/release-1.10/security/tools/jwt/samples/gen-jwt.py
+
+Cambiar Permisos:
+
+chmod +x gen-jwt.py
+
+Para generar los tokens se precisa bajar una clave privada de ejemplo:
+
+wget https://raw.githubusercontent.com/istio/istio/release-1.10/security/tools/jwt/samples/key.pem
+
+Probar la expiración de 5 segundos (son 65 porque el código tiene unos 60 iniciales):
+
+TOKEN=$(python3 gen-jwt.py ./key.pem --expire 5)
+for i in $(seq 1 10); do curl --header "Authorization: Bearer $TOKEN" "$INGRESS_HOST:$INGRESS_PORT/headers" -s -o /dev/null -w "%{http_code}\n"; sleep 10; done
+
+--------------------
+
+30. Autorización:
+Aplicar la política de Authorization para requerir un token válido:
+
+kubectl apply -f - <<EOF
+apiVersion: "security.istio.io/v1beta1"
+kind: "AuthorizationPolicy"
+metadata:
+  name: "frontend-ingress"
+  namespace: istio-system
+spec:
+  selector:
+    matchLabels:
+      istio: ingressgateway
+  action: DENY
+  rules:
+  - from:
+    - source:
+        notRequestPrincipals: ["*"]
+EOF
+
+31. Probar el acceso sin token:
+
+curl $INGRESS_HOST/headers -s -o /dev/null -w "%{http_code}\n"
+
+32. Aplicar la política de token por paths diferenciados:
+
+kubectl apply -f - <<EOF
+apiVersion: "security.istio.io/v1beta1"
+kind: "AuthorizationPolicy"
+metadata:
+  name: "frontend-ingress"
+  namespace: istio-system
+spec:
+  selector:
+    matchLabels:
+      istio: ingressgateway
+  action: DENY
+  rules:
+  - from:
+    - source:
+        notRequestPrincipals: ["*"]
+    to:
+    - operation:
+        paths: ["/headers"]
+EOF
+
+33. Probar que funcionen:
+
+curl $INGRESS_HOST/headers -s -o /dev/null -w "%{http_code}\n"
+
+curl $INGRESS_HOST/ip -s -o /dev/null -w "%{http_code}\n"
+
+34. Limpiar todo:
+
+kubectl -n istio-system delete requestauthentication jwt-example
+
+kubectl -n istio-system delete authorizationpolicy frontend-ingress
+
+kubectl delete ns foo bar legacy
+
+

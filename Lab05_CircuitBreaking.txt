@@ -1,0 +1,145 @@
+
+1. Circuit Breaking:
+https://istio.io/latest/docs/tasks/traffic-management/circuit-breaking/
+
+-----------------------
+
+Protección contra degradación del Servicio:
+
+2. Instalar un servicio con un ejemplo de Httpbin (https://httpbin.org/, el deploy está en https://github.com/istio/istio/blob/master/samples/httpbin/httpbin.yaml):
+
+kubectl apply -f samples/httpbin/httpbin.yaml
+
+3. Crear un Destination Rule con la config del Circuit Breaker:
+
+kubectl apply -f - <<EOF
+apiVersion: networking.istio.io/v1alpha3
+kind: DestinationRule
+metadata:
+  name: httpbin
+spec:
+  host: httpbin
+  trafficPolicy:
+    connectionPool:
+      tcp:
+        maxConnections: 1
+      http:
+        http1MaxPendingRequests: 1
+        maxRequestsPerConnection: 1
+    outlierDetection:
+      consecutive5xxErrors: 2
+      interval: 5s
+      baseEjectionTime: 1m
+      maxEjectionPercent: 100
+EOF
+
+
+
+4. Comprobar si se creó:
+$ kubectl get destinationrule httpbin -o yaml
+
+5. Crear un cliente para generar carga, con un ejemplo de Fortio (Deployment en https://github.com/istio/istio/blob/master/samples/httpbin/sample-client/fortio-deploy.yaml):
+
+kubectl apply -f samples/httpbin/sample-client/fortio-deploy.yaml
+
+6. Obtener el nombre del Pod y ejecutar un comando contra su container:
+
+FORTIO_POD=$(kubectl get pods -lapp=fortio -o 'jsonpath={.items[0].metadata.name}')
+
+kubectl exec -it "$FORTIO_POD"  -c fortio -- /usr/bin/fortio load -curl http://httpbin:8000/get
+
+Vamos a ver que anda todo bien. Observar el Jaeger.
+
+* Warning: Ver abajo del todo de este documento *
+
+7. Probar de llamar al path de httpbin que genera errores (https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/502). Observar que el parámetro consecutiveErrors esta en 2.
+
+kubectl exec -it "$FORTIO_POD"  -c fortio -- /usr/bin/fortio load -curl http://httpbin:8000/status/502
+
+Observar el Jaeger.
+
+Realizar dos veces mas la prueba (dentro de los 5 segundos del "interval") y observar el Jaeger. En la última prueba se verá un error 503 (https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/503) y se verá en el Jaeger que la llamada no se realizó, se abrió el circuito. Esperar 1 minuto (baseEjectionTime) y probar nuevamente.
+
+------------------
+
+8. Protección contra Servicios que no soporten muchas conexiones concurrentes:
+Concentrarse sólo en la parte de las conexiones concurrentes, con el DestinationRule con un solo error consecutivo:
+
+kubectl apply -f - <<EOF
+apiVersion: networking.istio.io/v1alpha3
+kind: DestinationRule
+metadata:
+  name: httpbin
+spec:
+  host: httpbin
+  trafficPolicy:
+    connectionPool:
+      tcp:
+        maxConnections: 1
+      http:
+        http1MaxPendingRequests: 1
+        maxRequestsPerConnection: 1
+    outlierDetection:
+      consecutive5xxErrors: 1
+      interval: 1s
+      baseEjectionTime: 3m
+      maxEjectionPercent: 100
+EOF
+
+9. Lanzar 20 peticiones con 2 conexiones concurrentes:
+
+kubectl exec -it "$FORTIO_POD"  -c fortio -- /usr/bin/fortio load -c 2 -qps 0 -n 20 -loglevel Warning http://httpbin:8000/get
+
+Se verá que mayormente anduvieron bien, por ejemplo:
+Code 200 : 15 (75.0 %)
+Code 503 : 5 (25.0 %)
+
+10. Aumentar la carga:
+
+kubectl exec -it "$FORTIO_POD"  -c fortio -- /usr/bin/fortio load -c 3 -qps 0 -n 30 -loglevel Warning http://httpbin:8000/get
+
+Se verá que aumentaron los errores:
+Code 200 : 11 (36.7 %)
+Code 503 : 19 (63.3 %)
+
+11. Para más detalles ver:
+
+kubectl exec "$FORTIO_POD" -c istio-proxy -- pilot-agent request GET stats | grep httpbin | grep pending
+
+Se verá que por ej un valor de 24 (19+5) para el upstream_rq_pending_overflow lo que significa que 24 llamadas incluyeron un circuit breaking.
+
+
+12. Resetear el ejemplo para dejarlo como al principio:
+
+kubectl delete destinationrule httpbin
+
+kubectl delete deploy httpbin fortio-deploy
+kubectl delete svc httpbin fortio
+kubectl delete sa httpbin
+
+
+* Warning: Tener cuidado con los Retries por defecto del Istio y con los Timeout: *
+
+Probar:
+
+kubectl exec -it "$FORTIO_POD"  -c fortio -- /usr/bin/fortio load -curl http://httpbin:8000/status/503
+
+Ver el Jaeger. Se verán dos reintentos a pesar de no haber configurado nada.
+La documentación no estaba actualizada (https://github.com/istio/istio/issues/20547), la actualizaron: "The default retry behavior for HTTP requests is to retry twice before returning the error.":
+https://istio.io/latest/docs/concepts/traffic-management/
+
+Con respecto a los timeouts se especifica que por defecto no se tiene en cuenta, pero probar:
+
+kubectl exec -it "$FORTIO_POD"  -c fortio -- /usr/bin/fortio load -curl http://httpbin:8000/delay/15
+
+Ver el Jaeger
+
+Se vera hay 10 segundos por defecto de timeout. 
+Un ejercicio viejo decia que el timeout por defecto era de 15seg:
+https://istio-releases.github.io/v0.1/docs/tasks/request-timeouts.html
+
+Hoy aclaran que no existe timeout por defecto. Esto es debido a un tema de httpbin, que sí tiene un timeout por defecto de 10 segundos!!:
+https://github.com/postmanlabs/httpbin/issues/375 
+
+
+

@@ -1,0 +1,27 @@
+1. Request Routing:
+https://istio.io/docs/tasks/traffic-management/request-routing/
+
+2. Redirigir todo a la version 1 de reviews:
+kubectl apply -f samples/bookinfo/networking/virtual-service-all-v1.yaml
+
+Refrescar el browser y ver Kiali.
+
+3. Request Routing basado en la identidad del usuario:
+Para simular esto el servicio product envía el http custom header "end-user" cuando llama a reviews:
+https://github.com/istio/istio/blob/master/samples/bookinfo/src/productpage/productpage.py
+
+
+4. Cuando el header tenga ese valor se redigirá a la version 2 de reviews:
+https://github.com/istio/istio/blob/master/samples/bookinfo/networking/virtual-service-reviews-test-v2.yaml
+
+kubectl apply -f samples/bookinfo/networking/virtual-service-reviews-test-v2.yaml
+
+Acceder al browser y ver que se accede a la version 1. 
+Hacer Sing in y elegir el usuario "jason". Se vera la version 2 de reviews.
+
+Loguearse como otro usuario. Se vera la version 1 nuevamente.
+
+Ver lo que muestra Kiali.
+
+5. Resetear el ejemplo:
+kubectl delete -f samples/bookinfo/networking/virtual-service-all-v1.yaml
